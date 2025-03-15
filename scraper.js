@@ -1,145 +1,164 @@
-const axios = require('axios');
-const cheerio = require('cheerio');
+// scraper.js
+const puppeteer = require('puppeteer');
+const fs = require('fs');
+const path = require('path');
 const { MongoClient } = require('mongodb');
+const XLSX = require('xlsx');
 
-// Configuración
+// Obtener variables de entorno
 const MONGODB_URI = process.env.MONGODB_URI;
 const DB_NAME = 'uai-salas';
 const COLLECTION_NAME = 'eventos';
 
-async function scrapeEvents() {
-  console.log('Iniciando proceso de scraping...');
+async function main() {
+  console.log('🚀 Iniciando proceso de scraping...');
   
-  try {
-    // Obtener la primera página para determinar número total de páginas
-    const { data: firstPageData } = await axios.get('https://hoy.uai.cl/');
-    const $firstPage = cheerio.load(firstPageData);
-    
-    // Determinar número total de páginas
-    let totalPages = 1;
-    const paginationItems = $firstPage('nav[aria-label="pagination"] ul li a');
-    paginationItems.each((i, el) => {
-      const pageNum = parseInt($firstPage(el).text().trim());
-      if (!isNaN(pageNum) && pageNum > totalPages) {
-        totalPages = pageNum;
-      }
-    });
-    
-    console.log(`Detectadas ${totalPages} páginas en total`);
-    
-    // Inicializar array para todos los eventos
-    const allEvents = [];
-    
-    // Procesar eventos de la primera página
-    const firstPageEvents = extractEventsFromPage($firstPage);
-    allEvents.push(...firstPageEvents);
-    console.log(`Extraídos ${firstPageEvents.length} eventos de la página 1`);
-    
-    // Procesar el resto de páginas
-    for (let page = 2; page <= totalPages; page++) {
-      console.log(`Procesando página ${page} de ${totalPages}...`);
-      
-      const { data } = await axios.get(`https://hoy.uai.cl/?page=${page}`);
-      const $ = cheerio.load(data);
-      
-      const pageEvents = extractEventsFromPage($);
-      allEvents.push(...pageEvents);
-      
-      console.log(`Extraídos ${pageEvents.length} eventos de la página ${page}`);
-      
-      // Pequeña pausa para no sobrecargar el servidor
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-    
-    console.log(`Scraping completado. Obtenidos ${allEvents.length} eventos en total.`);
-    
-    // Añadir fecha a cada evento
-    const today = new Date().toISOString().split('T')[0];
-    const eventsWithDate = allEvents.map(event => ({
-      ...event,
-      fechaActualizacion: today
-    }));
-    
-    // Guardar en MongoDB
-    await saveToMongoDB(eventsWithDate);
-    
-    return {
-      success: true,
-      count: allEvents.length
-    };
-  } catch (error) {
-    console.error('Error en el proceso de scraping:', error);
-    throw error;
+  // Crear carpeta para descargas si no existe
+  const downloadPath = path.join(process.cwd(), 'downloads');
+  if (!fs.existsSync(downloadPath)) {
+    fs.mkdirSync(downloadPath, { recursive: true });
   }
-}
+  
+  console.log(`📂 Carpeta de descargas: ${downloadPath}`);
 
-function extractEventsFromPage($) {
-  const events = [];
-  
-  $('table tbody tr').each((i, element) => {
-    const columns = $(element).find('td');
-    
-    if (columns.length >= 6) {
-      events.push({
-        tipo: $(columns[0]).find('div').text().trim() || 'Sin tipo',
-        evento: $(columns[1]).text().trim(),
-        sala: $(columns[2]).text().trim(),
-        inicio: $(columns[3]).text().trim(),
-        fin: $(columns[4]).text().trim(),
-        campus: $(columns[5]).text().trim()
-      });
-    }
+  // Iniciar el navegador con Puppeteer
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
-  
-  return events;
+
+  try {
+    const page = await browser.newPage();
+    
+    // Configurar el manejo de descargas
+    const client = await page.target().createCDPSession();
+    await client.send('Page.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: downloadPath,
+    });
+
+    console.log('🌐 Navegando a hoy.uai.cl...');
+    await page.goto('https://hoy.uai.cl/', { waitUntil: 'networkidle2' });
+    console.log('✅ Página cargada correctamente');
+    
+    // Esperar a que la página cargue completamente
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Hacer clic en el botón de descarga
+    console.log('🔍 Buscando el botón de descarga...');
+    const buttonClicked = await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button'));
+      const downloadButton = buttons.find(btn => btn.textContent.includes('Descargar Excel'));
+      if (downloadButton) {
+        console.log('Botón encontrado, haciendo clic...');
+        downloadButton.click();
+        return true;
+      }
+      return false;
+    });
+
+    if (!buttonClicked) {
+      throw new Error('No se encontró el botón de descarga');
+    }
+
+    console.log('⌛ Esperando que el archivo se descargue...');
+
+    // Esperar a que el archivo se descargue
+    let filePath = '';
+    let attempts = 0;
+    while (attempts < 30) { // Esperamos hasta 30 segundos
+      const files = fs.readdirSync(downloadPath);
+      const excelFile = files.find(file => file.endsWith('.xlsx'));
+
+      if (excelFile) {
+        filePath = path.join(downloadPath, excelFile);
+        console.log(`📄 Archivo Excel descargado: ${excelFile}`);
+        break;
+      }
+
+      attempts++;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    if (!filePath) {
+      throw new Error('No se encontró el archivo Excel después de esperar la descarga');
+    }
+
+    // Leer el archivo Excel
+    console.log('📊 Procesando el archivo Excel...');
+    const workbook = XLSX.readFile(filePath);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const jsonData = XLSX.utils.sheet_to_json(worksheet);
+
+    console.log(`📈 Se encontraron ${jsonData.length} eventos en el Excel`);
+
+    // Guardar en MongoDB
+    if (MONGODB_URI) {
+      await saveToMongoDB(jsonData);
+    } else {
+      console.log('⚠️ No se configuró MONGODB_URI, omitiendo guardado en base de datos');
+    }
+
+    console.log('✅ Proceso completado exitosamente');
+    return { success: true, eventsCount: jsonData.length };
+  } catch (error) {
+    console.error('❌ Error durante el proceso:', error);
+    throw error;
+  } finally {
+    await browser.close();
+    console.log('🔒 Navegador cerrado');
+  }
 }
 
 async function saveToMongoDB(events) {
-  if (!MONGODB_URI) {
-    throw new Error('MONGODB_URI environment variable is not set');
-  }
-  
-  console.log('Conectando a MongoDB...');
+  console.log('🔌 Conectando a MongoDB...');
   const client = new MongoClient(MONGODB_URI);
   
   try {
     await client.connect();
-    console.log('Conexión exitosa a MongoDB');
+    console.log('✅ Conexión exitosa a MongoDB');
     
     const db = client.db(DB_NAME);
     const collection = db.collection(COLLECTION_NAME);
     
-    // Eliminar eventos del día anterior
+    // Añadir fecha de actualización a los eventos
     const today = new Date().toISOString().split('T')[0];
+    const eventsWithDate = events.map(event => ({
+      ...event,
+      fechaActualizacion: today
+    }));
+    
+    // Eliminar eventos anteriores con la misma fecha
     await collection.deleteMany({ fechaActualizacion: today });
+    console.log(`🗑️ Eventos antiguos eliminados para la fecha ${today}`);
     
     // Insertar nuevos eventos
-    const result = await collection.insertMany(events);
-    console.log(`${result.insertedCount} eventos guardados en MongoDB`);
+    const result = await collection.insertMany(eventsWithDate);
+    console.log(`✅ ${result.insertedCount} eventos guardados en MongoDB`);
     
     // Crear índices para búsquedas eficientes
-    await collection.createIndex({ evento: 1 });
-    await collection.createIndex({ sala: 1 });
-    await collection.createIndex({ campus: 1 });
+    await collection.createIndex({ Evento: 1 });
+    await collection.createIndex({ Sala: 1 });
+    await collection.createIndex({ Campus: 1 });
+    await collection.createIndex({ fechaActualizacion: 1 });
     
-    console.log('Índices creados correctamente');
+    console.log('📑 Índices creados correctamente');
   } finally {
     await client.close();
-    console.log('Conexión a MongoDB cerrada');
+    console.log('🔌 Conexión a MongoDB cerrada');
   }
 }
 
-// Ejecutar el script si se llama directamente
+// Ejecutar el script
 if (require.main === module) {
-  scrapeEvents()
-    .then(result => {
-      console.log('Proceso completado exitosamente:', result);
+  main()
+    .then(() => {
+      console.log('🎉 Script ejecutado correctamente');
       process.exit(0);
     })
     .catch(error => {
-      console.error('Error en el proceso:', error);
+      console.error('❌ Error en la ejecución:', error);
       process.exit(1);
     });
 }
-
-module.exports = { scrapeEvents };

@@ -1,10 +1,10 @@
-name: Daily Scrape
+name: Daily Excel Scraping
 
 on:
   schedule:
-    # Ejecutar todos los días a las 5:00 AM UTC (ajusta según la zona horaria que prefieras)
-    - cron: '0 5 * * *'
-  workflow_dispatch: # Permite ejecución manual
+    # Ejecutar cada 2 minutos (para pruebas)
+    - cron: '*/2 * * * *'
+  workflow_dispatch: # Permite ejecución manual desde la interfaz de GitHub
 
 jobs:
   scrape:
@@ -22,7 +22,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
       
+      - name: Install XLSX
+        run: npm install xlsx
+      
       - name: Run scraper
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: node scraper.js
+      
+      - name: Archive Excel file
+        uses: actions/upload-artifact@v3
+        with:
+          name: uai-eventos-excel
+          path: downloads/*.xlsx
+          retention-days: 7 # Guardar el archivo por 7 días
