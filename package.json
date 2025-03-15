@@ -1,13 +1,15 @@
 {
-    "name": "uai-excel-scraper",
-    "version": "1.0.0",
-    "description": "Scraper para descargar el Excel de salas UAI",
-    "main": "scraper.js",
-    "scripts": {
-      "start": "node scraper.js"
-    },
-    "dependencies": {
-      "puppeteer": "^20.8.0",
-      "mongodb": "^6.3.0"
-    }
-  }
+  "name": "uai-excel-scraper",
+  "version": "1.0.0",
+  "description": "Scraper para descargar Excel de salas UAI",
+  "main": "scraper.js",
+  "scripts": {
+    "start": "node scraper.js"
+  },
+  "dependencies": {
+    "puppeteer": "^21.3.8",
+    "mongodb": "^6.3.0",
+    "xlsx": "^0.18.5"
+  },
+  "type": "commonjs"
+}
