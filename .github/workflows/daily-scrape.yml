@@ -12,18 +12,16 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '18'
       
       - name: Install dependencies
-        run: npm ci
-      
-      - name: Install XLSX
-        run: npm install xlsx
+        run: npm install
+        # Cambiado de npm ci a npm install
       
       - name: Run scraper
         env:
@@ -31,8 +29,8 @@ jobs:
         run: node scraper.js
       
       - name: Archive Excel file
-        uses: actions/upload-artifact@v4  # Cambiado de v3 a v4
+        uses: actions/upload-artifact@v4
         with:
           name: uai-eventos-excel
           path: downloads/*.xlsx
-          retention-days: 7 # Guardar el archivo por 7 días
+          retention-days: 7
