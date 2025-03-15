@@ -9,6 +9,7 @@ const XLSX = require('xlsx');
 const MONGODB_URI = process.env.MONGODB_URI;
 const DB_NAME = 'uai-salas';
 const COLLECTION_NAME = 'eventos';
+const ALL_EVENTOS_COLLECTION = 'all_eventos'; // Nueva colección
 
 async function main() {
   console.log('🚀 Iniciando proceso de scraping...');
@@ -121,6 +122,7 @@ async function saveToMongoDB(events) {
     
     const db = client.db(DB_NAME);
     const collection = db.collection(COLLECTION_NAME);
+    const allEventosCollection = db.collection(ALL_EVENTOS_COLLECTION);
     
     // Añadir fecha de actualización a los eventos
     const today = new Date().toISOString().split('T')[0];
@@ -129,21 +131,50 @@ async function saveToMongoDB(events) {
       fechaActualizacion: today
     }));
     
-    // Eliminar eventos anteriores con la misma fecha
+    // Eliminar eventos anteriores con la misma fecha (solo para la colección original)
     await collection.deleteMany({ fechaActualizacion: today });
-    console.log(`🗑️ Eventos antiguos eliminados para la fecha ${today}`);
+    console.log(`🗑️ Eventos antiguos eliminados para la fecha ${today} en colección ${COLLECTION_NAME}`);
     
-    // Insertar nuevos eventos
+    // Insertar nuevos eventos en la colección original
     const result = await collection.insertMany(eventsWithDate);
-    console.log(`✅ ${result.insertedCount} eventos guardados en MongoDB`);
+    console.log(`✅ ${result.insertedCount} eventos guardados en colección ${COLLECTION_NAME}`);
     
-    // Crear índices para búsquedas eficientes
+    // Filtrar solo Cátedras y Ayudantías para la colección all_eventos
+    const catedrasYAyudantias = eventsWithDate.filter(event => 
+      event.Tipo === "Cátedra" || event.Tipo === "Ayudantía"
+    );
+    
+    // Preparar datos simplificados para all_eventos (solo los campos requeridos)
+    const simplifiedEvents = catedrasYAyudantias.map(event => ({
+      Evento: event.Evento,
+      Inicio: event.Inicio,
+      Fin: event.Fin,
+      Tipo: event.Tipo,
+      Sala: event.Sala,
+      Campus: event.Campus,
+      fechaActualizacion: event.fechaActualizacion
+    }));
+    
+    // Insertar eventos filtrados en all_eventos (sin borrar datos previos)
+    if (simplifiedEvents.length > 0) {
+      const allEventosResult = await allEventosCollection.insertMany(simplifiedEvents);
+      console.log(`✅ ${allEventosResult.insertedCount} eventos de Cátedra/Ayudantía guardados en colección ${ALL_EVENTOS_COLLECTION}`);
+    } else {
+      console.log(`ℹ️ No se encontraron eventos de Cátedra/Ayudantía para guardar en ${ALL_EVENTOS_COLLECTION}`);
+    }
+    
+    // Crear índices para búsquedas eficientes en la colección original
     await collection.createIndex({ Evento: 1 });
     await collection.createIndex({ Sala: 1 });
     await collection.createIndex({ Campus: 1 });
     await collection.createIndex({ fechaActualizacion: 1 });
     
-    console.log('📑 Índices creados correctamente');
+    // Crear índices para la nueva colección
+    await allEventosCollection.createIndex({ Evento: 1 });
+    await allEventosCollection.createIndex({ Tipo: 1 });
+    await allEventosCollection.createIndex({ fechaActualizacion: 1 });
+    
+    console.log('📑 Índices creados correctamente en ambas colecciones');
   } finally {
     await client.close();
     console.log('🔌 Conexión a MongoDB cerrada');
