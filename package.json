@@ -7,7 +7,7 @@
     "start": "node scraper.js"
   },
   "dependencies": {
-    "puppeteer": "^21.3.8",
+    "puppeteer": "^22.8.2",
     "mongodb": "^6.3.0",
     "xlsx": "^0.18.5"
   },
