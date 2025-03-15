@@ -3,7 +3,7 @@ name: Daily Excel Scraping
 on:
   schedule:
     # Ejecutar cada 2 minutos (para pruebas)
-    - cron: '*/2 * * * *'
+    - cron: '0 4 * * *'  
   workflow_dispatch: # Permite ejecución manual desde la interfaz de GitHub
 
 jobs:
