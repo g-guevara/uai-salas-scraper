@@ -150,8 +150,6 @@ async function saveToMongoDB(events) {
       Inicio: event.Inicio,
       Fin: event.Fin,
       Tipo: event.Tipo,
-      Sala: event.Sala,
-      Campus: event.Campus,
       fechaActualizacion: event.fechaActualizacion
     }));
     
@@ -172,6 +170,8 @@ async function saveToMongoDB(events) {
     // Crear índices para la nueva colección
     await allEventosCollection.createIndex({ Evento: 1 });
     await allEventosCollection.createIndex({ Tipo: 1 });
+    await allEventosCollection.createIndex({ Inicio: 1 });
+    await allEventosCollection.createIndex({ Fin: 1 });
     await allEventosCollection.createIndex({ fechaActualizacion: 1 });
     
     console.log('📑 Índices creados correctamente en ambas colecciones');
