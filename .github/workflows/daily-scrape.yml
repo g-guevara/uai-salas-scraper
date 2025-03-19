@@ -2,8 +2,7 @@ name: Daily Excel Scraping
 
 on:
   schedule:
-    - cron: '30 15 * * *' # 12:30 PM CLT (UTC-3)
-    - cron: '30 16 * * *' # 12:30 PM CLST (UTC-4)
+  - cron: '0 5 * * *'  # scrapping, todos los dias, a las 1 (horario verano) o a las 2 (horario invierno)
 
   workflow_dispatch: # Permite ejecución manual desde la interfaz de GitHub
 
