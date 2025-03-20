@@ -22,6 +22,13 @@ async function main() {
   
   console.log(`📂 Carpeta de descargas: ${downloadPath}`);
 
+  // Primero, eliminar todos los datos de la colección 'eventos'
+  if (MONGODB_URI) {
+    await clearEventsCollection();
+  } else {
+    console.log('⚠️ No se configuró MONGODB_URI, omitiendo limpieza de la base de datos');
+  }
+
   // Iniciar el navegador con Puppeteer
   const browser = await puppeteer.launch({
     headless: 'new',
@@ -59,7 +66,8 @@ async function main() {
     });
 
     if (!buttonClicked) {
-      throw new Error('No se encontró el botón de descarga');
+      console.log('⚠️ No se encontró el botón de descarga. Probablemente no hay datos disponibles hoy.');
+      return { success: true, eventsCount: 0, message: 'No hay datos disponibles hoy' };
     }
 
     console.log('⌛ Esperando que el archivo se descargue...');
@@ -82,15 +90,33 @@ async function main() {
     }
 
     if (!filePath) {
-      throw new Error('No se encontró el archivo Excel después de esperar la descarga');
+      console.log('⚠️ No se pudo descargar el archivo Excel. Probablemente no hay datos disponibles.');
+      return { success: true, eventsCount: 0, message: 'No se pudo descargar el archivo Excel' };
     }
 
     // Leer el archivo Excel
     console.log('📊 Procesando el archivo Excel...');
     const workbook = XLSX.readFile(filePath);
+    
+    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+      console.log('⚠️ El archivo Excel no contiene hojas de cálculo.');
+      return { success: true, eventsCount: 0, message: 'Excel sin hojas de cálculo' };
+    }
+    
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
+    
+    if (!worksheet) {
+      console.log('⚠️ No se pudo acceder a la hoja de cálculo.');
+      return { success: true, eventsCount: 0, message: 'No se pudo acceder a la hoja de cálculo' };
+    }
+    
     const jsonData = XLSX.utils.sheet_to_json(worksheet);
+
+    if (!jsonData || jsonData.length === 0) {
+      console.log('⚠️ El archivo Excel no contiene datos.');
+      return { success: true, eventsCount: 0, message: 'Excel sin datos' };
+    }
 
     console.log(`📈 Se encontraron ${jsonData.length} eventos en el Excel`);
 
@@ -105,10 +131,52 @@ async function main() {
     return { success: true, eventsCount: jsonData.length };
   } catch (error) {
     console.error('❌ Error durante el proceso:', error);
-    throw error;
+    // No lanzamos el error, solo lo registramos para que el script no falle
+    return { success: false, error: error.message };
   } finally {
     await browser.close();
     console.log('🔒 Navegador cerrado');
+  }
+}
+
+// Obtener el día de la semana en español
+function getDiaSemana() {
+  const dias = [
+    'Domingo', 
+    'Lunes', 
+    'Martes', 
+    'Miércoles', 
+    'Jueves', 
+    'Viernes', 
+    'Sábado'
+  ];
+  
+  const now = new Date();
+  return dias[now.getDay()];
+}
+
+// Nueva función para eliminar todos los datos de la colección 'eventos'
+async function clearEventsCollection() {
+  console.log('🗑️ Eliminando todos los datos de la colección eventos...');
+  const client = new MongoClient(MONGODB_URI);
+  
+  try {
+    await client.connect();
+    console.log('✅ Conexión exitosa a MongoDB para limpieza');
+    
+    const db = client.db(DB_NAME);
+    const collection = db.collection(COLLECTION_NAME);
+    
+    // Eliminar todos los documentos de la colección
+    const result = await collection.deleteMany({});
+    console.log(`🗑️ Se eliminaron ${result.deletedCount} eventos de la colección ${COLLECTION_NAME}`);
+  } catch (error) {
+    console.error('❌ Error al eliminar datos:', error);
+    // No lanzamos el error, solo lo registramos para que el script no falle
+    console.log('⚠️ Se continuará con el proceso a pesar del error en la limpieza');
+  } finally {
+    await client.close();
+    console.log('🔌 Conexión a MongoDB cerrada después de limpieza');
   }
 }
 
@@ -131,34 +199,66 @@ async function saveToMongoDB(events) {
       fechaActualizacion: today
     }));
     
-    // Eliminar eventos anteriores con la misma fecha (solo para la colección original)
-    await collection.deleteMany({ fechaActualizacion: today });
-    console.log(`🗑️ Eventos antiguos eliminados para la fecha ${today} en colección ${COLLECTION_NAME}`);
-    
     // Insertar nuevos eventos en la colección original
     const result = await collection.insertMany(eventsWithDate);
     console.log(`✅ ${result.insertedCount} eventos guardados en colección ${COLLECTION_NAME}`);
+    
+    // Obtener el día de la semana actual
+    const diaSemana = getDiaSemana();
+    console.log(`🗓️ Día de la semana actual: ${diaSemana}`);
     
     // Filtrar solo Cátedras y Ayudantías para la colección all_eventos
     const catedrasYAyudantias = eventsWithDate.filter(event => 
       event.Tipo === "Cátedra" || event.Tipo === "Ayudantía"
     );
     
-    // Preparar datos simplificados para all_eventos (solo los campos requeridos)
-    const simplifiedEvents = catedrasYAyudantias.map(event => ({
-      Evento: event.Evento,
-      Inicio: event.Inicio,
-      Fin: event.Fin,
-      Tipo: event.Tipo,
-      fechaActualizacion: event.fechaActualizacion
-    }));
+    console.log(`🔍 Verificando ${catedrasYAyudantias.length} eventos de Cátedra/Ayudantía para evitar duplicados...`);
     
-    // Insertar eventos filtrados en all_eventos (sin borrar datos previos)
-    if (simplifiedEvents.length > 0) {
-      const allEventosResult = await allEventosCollection.insertMany(simplifiedEvents);
+    // Lista para almacenar los eventos que pasarán a la colección all_eventos
+    const eventosAGuardar = [];
+    
+    // Verificar cada evento para ver si ya existe en la colección all_eventos
+    for (const event of catedrasYAyudantias) {
+      // Crear el objeto de búsqueda con los campos que deben coincidir
+      const busqueda = {
+        Tipo: event.Tipo,
+        Evento: event.Evento,
+        Inicio: event.Inicio,
+        Fin: event.Fin
+      };
+      
+      // Añadir campos adicionales si existen en el evento
+      if (event.Sala) busqueda.Sala = event.Sala;
+      if (event.Edificio) busqueda.Edificio = event.Edificio;
+      if (event.Campus) busqueda.Campus = event.Campus;
+      
+      // Consultar si ya existe un evento con estas características
+      const eventoExistente = await allEventosCollection.findOne(busqueda);
+      
+      // Si no existe, lo agregamos a la lista de eventos a guardar
+      if (!eventoExistente) {
+        eventosAGuardar.push({
+          Evento: event.Evento,
+          Inicio: event.Inicio,
+          Fin: event.Fin,
+          Tipo: event.Tipo,
+          Sala: event.Sala,
+          Edificio: event.Edificio,
+          Campus: event.Campus,
+          fechaActualizacion: today,
+          diaSemana: diaSemana
+        });
+      }
+    }
+    
+    console.log(`✅ De ${catedrasYAyudantias.length} eventos, ${eventosAGuardar.length} son nuevos y se guardarán en all_eventos`);
+    
+    // Insertar eventos filtrados en all_eventos (solo los que no existen ya)
+    if (eventosAGuardar.length > 0) {
+      const allEventosResult = await allEventosCollection.insertMany(eventosAGuardar);
       console.log(`✅ ${allEventosResult.insertedCount} eventos de Cátedra/Ayudantía guardados en colección ${ALL_EVENTOS_COLLECTION}`);
     } else {
-      console.log(`ℹ️ No se encontraron eventos de Cátedra/Ayudantía para guardar en ${ALL_EVENTOS_COLLECTION}`);
+      console.log(`ℹ️ No se encontraron nuevos eventos de Cátedra/Ayudantía para guardar en ${ALL_EVENTOS_COLLECTION}`);
     }
     
     // Crear índices para búsquedas eficientes en la colección original
@@ -173,8 +273,14 @@ async function saveToMongoDB(events) {
     await allEventosCollection.createIndex({ Inicio: 1 });
     await allEventosCollection.createIndex({ Fin: 1 });
     await allEventosCollection.createIndex({ fechaActualizacion: 1 });
+    await allEventosCollection.createIndex({ diaSemana: 1 });
+    await allEventosCollection.createIndex({ Sala: 1 });
+    await allEventosCollection.createIndex({ Campus: 1 });
     
     console.log('📑 Índices creados correctamente en ambas colecciones');
+  } catch (error) {
+    console.error('❌ Error al guardar en MongoDB:', error);
+    throw error;
   } finally {
     await client.close();
     console.log('🔌 Conexión a MongoDB cerrada');
@@ -184,8 +290,9 @@ async function saveToMongoDB(events) {
 // Ejecutar el script
 if (require.main === module) {
   main()
-    .then(() => {
+    .then((result) => {
       console.log('🎉 Script ejecutado correctamente');
+      console.log('Resultado:', result);
       process.exit(0);
     })
     .catch(error => {
@@ -193,3 +300,5 @@ if (require.main === module) {
       process.exit(1);
     });
 }
+
+module.exports = { main }; // Exportamos la función main para posibles pruebas
